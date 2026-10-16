@@ -8,8 +8,8 @@ with `wglDXRegisterObjectNV` is **never freed** after
 ## Quick test (no build)
 
 Download [amd-interop-leak-test.zip](https://github.com/tosiek/qt-opengl-amd-leak/releases/download/v1/amd-interop-leak-test.zip)
-(Windows 10/11 x64), unzip it, open a command prompt in the folder and run
-`test.bat`. It takes about 15 seconds. `register` growing by about 3.5 MB and
+(Windows 10/11 x64), unzip it and double-click `test.bat`. It takes about 15
+seconds and saves the output to `results.txt`. `register` growing by about 3.5 MB and
 1 handle per frame, while `reuse` and `nointerop` stay flat, means your driver
 is affected.
 
@@ -32,7 +32,7 @@ Build in an "x64 Native Tools Command Prompt for VS 2022":
 
 ```
 build.bat
-test.bat                         REM runs the three modes below, 75 frames each
+test.bat                         REM runs the three modes below (75 frames each), saves results.txt
 ```
 
 Or run one mode with `interop_leak.exe <mode> [frames]`:
