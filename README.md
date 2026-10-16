@@ -19,10 +19,14 @@ Build in an "x64 Native Tools Command Prompt for VS 2022":
 
 ```
 build.bat
-interop_leak.exe register 75     REM leaks
-interop_leak.exe reuse 75        REM same texture registered once: flat
-interop_leak.exe nointerop 75    REM same create/release, no WGL interop: flat
+test.bat                         REM runs the three modes below, 75 frames each
 ```
+
+Or run one mode with `interop_leak.exe <mode> [frames]`:
+
+- `register`: leaks
+- `reuse`: the same texture registered once; flat
+- `nointerop`: the same create/release with no WGL interop; flat
 
 ## Results
 
