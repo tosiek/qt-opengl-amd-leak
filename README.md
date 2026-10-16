@@ -5,6 +5,19 @@ with `wglDXRegisterObjectNV` is **never freed** after
 `wglDXUnregisterObjectNV` and its last `Release()`, even after
 `ID3D11DeviceContext::Flush()`. One kernel Event handle leaks with it.
 
+## Quick test (no build)
+
+Download [amd-interop-leak-test.zip](https://github.com/tosiek/qt-opengl-amd-leak/releases/download/v1/amd-interop-leak-test.zip)
+(Windows 10/11 x64), unzip it, open a command prompt in the folder and run
+`test.bat`. It takes about 15 seconds. `register` growing by about 3.5 MB and
+1 handle per frame, while `reuse` and `nointerop` stay flat, means your driver
+is affected.
+
+The exe is built with MSVC 14.44 (Visual Studio 2022 17.14) and needs the
+Visual C++ 2015-2022 Redistributable (x64) 14.44 or newer. The two runtime
+DLLs (`vcruntime140.dll`, `vcruntime140_1.dll`, 14.44.35211.0) are in the zip,
+so nothing needs to be installed.
+
 ## Repro
 
 [`interop_leak.cpp`](interop_leak.cpp) (~150 lines, D3D11 + OpenGL only).
