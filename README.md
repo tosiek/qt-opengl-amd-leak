@@ -81,6 +81,26 @@ Workarounds:
 - **Qt WebEngine users:** set `QTWEBENGINE_CHROMIUM_FLAGS=--disable-gpu`.
   Chromium then passes frames as images and does not use the interop.
 
+## Qt WebEngine tester
+
+[`qt-tester/`](qt-tester/) is a small Qt app that shows the same web page (rebuilt
+once per second) for 60 s with OpenGL and 60 s with Direct3D 11, and writes
+`report.txt` with the memory and handle growth of each run. It checks a whole
+Qt WebEngine setup, not only the driver call.
+
+Prebuilt with Qt 6.12.0, no install needed:
+[qt-webengine-leak-tester-6.12.0.zip](https://github.com/tosiek/qt-opengl-amd-leak/releases/download/v2/qt-webengine-leak-tester-6.12.0.zip)
+(126 MB). Unzip and double-click `run-test.bat`; it takes about 3 minutes.
+
+| Qt | OpenGL (60 s) | Direct3D 11 (60 s) |
+|---|---|---|
+| 6.12.0 | +215 MB, +60 handles | +5 MB |
+| 6.11.3 | +229 MB, +60 handles | 0 MB |
+
+Build: `cmake -S qt-tester -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+-DCMAKE_PREFIX_PATH=<Qt>/msvc2022_64` and `cmake --build build` (Qt modules:
+qtwebengine, qtwebchannel, qtpositioning).
+
 ## Related
 
 - Jellyfin Desktop [#1091](https://github.com/jellyfin/jellyfin-desktop/issues/1091),

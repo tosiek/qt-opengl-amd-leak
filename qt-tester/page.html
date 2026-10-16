@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>repro page</title>
+<style>
+  body { margin: 0; background: #101010; color: #ddd; font-family: sans-serif; }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, 180px); gap: 12px; padding: 16px; }
+  .card { height: 260px; border-radius: 6px; display: flex; align-items: flex-end; padding: 8px; box-sizing: border-box; }
+  #info { position: fixed; top: 8px; right: 12px; background: #000a; padding: 4px 8px; }
+</style>
+</head>
+<body>
+<div id="info"></div>
+<div id="grid"></div>
+<script>
+  // Rebuild the whole page every second, like navigating between views of a web app
+  let n = 0;
+  function render() {
+    n++;
+    const grid = document.getElementById('grid');
+    grid.replaceChildren();
+    for (let i = 0; i < 40; i++) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      const h = (n * 37 + i * 11) % 360;
+      card.style.background = `linear-gradient(160deg, hsl(${h},60%,45%), hsl(${(h + 120) % 360},60%,20%))`;
+      card.textContent = `View ${n} / item ${i}`;
+      grid.appendChild(card);
+    }
+    document.getElementById('info').textContent = `render #${n}`;
+  }
+  render();
+  setInterval(render, 1000);
+</script>
+</body>
+</html>

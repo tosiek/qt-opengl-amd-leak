@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.21)
+project(leaktest LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_AUTORCC ON)
+find_package(Qt6 REQUIRED COMPONENTS Gui GuiPrivate Quick Qml WebEngineQuick)
+add_executable(leaktest main.cpp resources.qrc)
+target_link_libraries(leaktest PRIVATE Qt6::Gui Qt6::GuiPrivate Qt6::Quick Qt6::Qml Qt6::WebEngineQuick psapi dxgi)
