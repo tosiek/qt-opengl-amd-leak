@@ -112,10 +112,12 @@ Tested with Qt 6.12.0 on the affected AMD driver (Qt Quick OpenGL, 60 s page re-
 original +215 MB / +60 handles, patched +5 MB / -2 handles. Jellyfin Desktop with the
 patched build stays flat during browsing and video playback.
 
-Prebuilt for Qt 6.12.0 msvc2022_64 (drop-in replacement for `Qt6WebEngineCore.dll` and
-`QtWebEngineProcess.exe`, needs the release Qt WebEngine 6.12.0 package):
-[qtwebengine-6.12.0-wgl-pool-win64.zip](https://github.com/tosiek/qt-opengl-amd-leak/releases/download/v3/qtwebengine-6.12.0-wgl-pool-win64.zip).
-Build details and licence notes are in the zip's `README.txt`.
+Prebuilt for Qt 6.12.0 msvc2022_64 with this patch and the exit crash fix below (drop-in
+replacement for `Qt6WebEngineCore.dll` and `QtWebEngineProcess.exe`, needs the release Qt
+WebEngine 6.12.0 package):
+[qtwebengine-6.12.0-wgl-fixes-win64.zip](https://github.com/tosiek/qt-opengl-amd-leak/releases/download/v4/qtwebengine-6.12.0-wgl-fixes-win64.zip).
+Build details and licence notes are in the zip's `README.txt`. The build with only this
+patch is still in release [v3](https://github.com/tosiek/qt-opengl-amd-leak/releases/tag/v3).
 
 ## Crash on exit (atio6axx.dll, 0xc0000409)
 
@@ -158,7 +160,8 @@ creates the `WGLHelper` singleton with `new` and never destroys it; the OS relea
 everything at process exit. It applies to stock Qt WebEngine and on top of 0001.
 
 Tested with Qt 6.12.0 (0001 + 0002), Qt Quick OpenGL, window visible: 5 of 5 runs exit
-cleanly. With 0001 only, every visible run crashed on exit.
+cleanly. With 0001 only, every visible run crashed on exit. Prebuilt with both patches:
+[release v4](https://github.com/tosiek/qt-opengl-amd-leak/releases/tag/v4).
 
 ## Related
 
