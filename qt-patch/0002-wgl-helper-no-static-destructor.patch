@@ -1,0 +1,18 @@
+diff --git a/src/core/compositor/wgl_helper.cpp b/src/core/compositor/wgl_helper.cpp
+index 0ed24b8..a094373 100644
+--- a/src/core/compositor/wgl_helper.cpp
++++ b/src/core/compositor/wgl_helper.cpp
+@@ -39,8 +39,11 @@ WGLHelper::WGLFunctions::WGLFunctions()
+ 
+ WGLHelper *WGLHelper::instance()
+ {
+-    static WGLHelper wglHelper;
+-    return &wglHelper;
++    // Intentionally never destroyed. A static object would be destroyed in DLL_PROCESS_DETACH,
++    // when the D3D11 driver may already be unloaded; wglDXCloseDeviceNV then crashes the AMD
++    // driver on exit (atio6axx.dll, 0xc0000409). The OS releases everything at process exit.
++    static WGLHelper *wglHelper = new WGLHelper;
++    return wglHelper;
+ }
+ 
+ WGLHelper::WGLHelper() : m_functions(new WGLHelper::WGLFunctions())

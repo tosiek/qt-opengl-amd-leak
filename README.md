@@ -117,6 +117,49 @@ Prebuilt for Qt 6.12.0 msvc2022_64 (drop-in replacement for `Qt6WebEngineCore.dl
 [qtwebengine-6.12.0-wgl-pool-win64.zip](https://github.com/tosiek/qt-opengl-amd-leak/releases/download/v3/qtwebengine-6.12.0-wgl-pool-win64.zip).
 Build details and licence notes are in the zip's `README.txt`.
 
+## Crash on exit (atio6axx.dll, 0xc0000409)
+
+A Qt WebEngine app that showed at least one web frame with OpenGL crashes when it exits on
+the same AMD driver. The Windows event log shows Application Error 1000: faulting module
+`atio6axx.dll` 31.0.21925.1001, exception code `0xc0000409`, fault offset `0x21a2b29`. It
+happens with Qt 6.10.3, 6.11.3 and 6.12.0, with and without the texture pool patch. It does
+not happen with `--disable-gpu`, with the Direct3D 11 scene graph, or when the window stays
+minimized (no web frame imported).
+
+Crash dump stack, from the bottom up:
+
+```
+main returns -> ExitProcess -> LdrShutdownProcess
+  Qt6WebEngineCore.dll DLL_PROCESS_DETACH -> static destructors
+    WGLHelper::~WGLHelper() -> wglDXCloseDeviceNV
+      atio6axx.dll -> d3d11.dll -> atidxx64.dll: access violation reading freed memory
+        atio6axx.dll exception handler -> __fastfail(7)   (FAST_FAIL_FATAL_APP_EXIT)
+```
+
+`WGLHelper` is a function-local static, so it is destroyed during `DLL_PROCESS_DETACH`.
+`atidxx64.dll` was loaded later (by `D3D11CreateDevice`), so it has already been detached
+and freed its state. Only the main thread is left at that point, so it is not a race.
+
+### Repro without Qt
+
+[`exit-crash/`](exit-crash/): `holder.dll` keeps a D3D11 device and a `WGL_NV_DX_interop`
+device in a function-local static, like `WGLHelper`, and closes it in the destructor.
+`build.bat`, then `test.bat`:
+
+| Mode | `wglDXCloseDeviceNV` called from | Exit code |
+|---|---|---|
+| `dll` | `holder.dll` static destructor (`DLL_PROCESS_DETACH`) | **`0xC0000409`**, same event log signature |
+| `atexit` | the exe's `atexit` handler, before `ExitProcess` | 0 |
+
+### Qt WebEngine fix (tested)
+
+[`qt-patch/0002-wgl-helper-no-static-destructor.patch`](qt-patch/0002-wgl-helper-no-static-destructor.patch)
+creates the `WGLHelper` singleton with `new` and never destroys it; the OS releases
+everything at process exit. It applies to stock Qt WebEngine and on top of 0001.
+
+Tested with Qt 6.12.0 (0001 + 0002), Qt Quick OpenGL, window visible: 5 of 5 runs exit
+cleanly. With 0001 only, every visible run crashed on exit.
+
 ## Related
 
 - Jellyfin Desktop [#1091](https://github.com/jellyfin/jellyfin-desktop/issues/1091),
