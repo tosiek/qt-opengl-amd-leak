@@ -153,6 +153,11 @@ device in a function-local static, like `WGLHelper`, and closes it in the destru
 | `dll` | `holder.dll` static destructor (`DLL_PROCESS_DETACH`) | **`0xC0000409`**, same event log signature |
 | `atexit` | the exe's `atexit` handler, before `ExitProcess` | 0 |
 
+`detach_order.exe` makes the same call from the same static destructor and only changes
+the DLL load order: `early` (`holder.dll` initialized before `atidxx64.dll`, as in Qt
+apps) crashes with `0xC0000409`; `late` (a D3D11 device is created first, so
+`atidxx64.dll` is initialized before `holder.dll` and detached after it) exits with 0.
+
 ### Qt WebEngine fix (tested)
 
 [`qt-patch/0002-wgl-helper-no-static-destructor.patch`](qt-patch/0002-wgl-helper-no-static-destructor.patch)
