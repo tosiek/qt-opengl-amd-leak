@@ -101,6 +101,22 @@ Build: `cmake -S qt-tester -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 -DCMAKE_PREFIX_PATH=<Qt>/msvc2022_64` and `cmake --build build` (Qt modules:
 qtwebengine, qtwebchannel, qtpositioning).
 
+## Qt WebEngine fix (tested)
+
+[`qt-patch/0001-wgl-interop-texture-pool.patch`](qt-patch/0001-wgl-interop-texture-pool.patch)
+changes only `src/core/compositor/wgl_helper.{h,cpp}`: instead of registering a new D3D11
+texture with `wglDXRegisterObjectNV` for every web frame, Qt WebEngine keeps a small pool of
+registered textures per OpenGL context and reuses them.
+
+Tested with Qt 6.12.0 on the affected AMD driver (Qt Quick OpenGL, 60 s page re-rendering):
+original +215 MB / +60 handles, patched +5 MB / -2 handles. Jellyfin Desktop with the
+patched build stays flat during browsing and video playback.
+
+Prebuilt for Qt 6.12.0 msvc2022_64 (drop-in replacement for `Qt6WebEngineCore.dll` and
+`QtWebEngineProcess.exe`, needs the release Qt WebEngine 6.12.0 package):
+[qtwebengine-6.12.0-wgl-pool-win64.zip](https://github.com/tosiek/qt-opengl-amd-leak/releases/download/v3/qtwebengine-6.12.0-wgl-pool-win64.zip).
+Build details and licence notes are in the zip's `README.txt`.
+
 ## Related
 
 - Jellyfin Desktop [#1091](https://github.com/jellyfin/jellyfin-desktop/issues/1091),

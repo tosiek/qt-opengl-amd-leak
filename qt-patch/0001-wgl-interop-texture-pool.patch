@@ -1,0 +1,379 @@
+diff --git a/src/core/compositor/wgl_helper.cpp b/src/core/compositor/wgl_helper.cpp
+index 29bc551..0ed24b8 100644
+--- a/src/core/compositor/wgl_helper.cpp
++++ b/src/core/compositor/wgl_helper.cpp
+@@ -8,6 +8,8 @@
+ #include <QtGui/qopenglcontext.h>
+ #include <QtGui/qopenglfunctions.h>
+ 
++#include <algorithm>
++
+ #if !defined(WGL_NV_DX_interop)
+ #define WGL_ACCESS_READ_ONLY_NV 0x00000000
+ #define WGL_ACCESS_READ_WRITE_NV 0x00000001
+@@ -80,10 +82,187 @@ WGLHelper::WGLHelper() : m_functions(new WGLHelper::WGLFunctions())
+ 
+ WGLHelper::~WGLHelper()
+ {
++    // The OpenGL contexts are gone at this point, only drop the interop registrations.
++    for (InteropTexture *texture : std::as_const(m_freeTextures))
++        destroyTexture(texture, /*deleteGLTexture=*/false);
++    for (InteropTexture *texture : std::as_const(m_usedTextures))
++        destroyTexture(texture, /*deleteGLTexture=*/false);
++
+     if (m_interopDevice != INVALID_HANDLE_VALUE)
+         m_functions->wglDXCloseDeviceNV(m_interopDevice);
+ }
+ 
++static bool isSameTextureDesc(const D3D11_TEXTURE2D_DESC &a, const D3D11_TEXTURE2D_DESC &b)
++{
++    return a.Width == b.Width && a.Height == b.Height && a.MipLevels == b.MipLevels
++            && a.ArraySize == b.ArraySize && a.Format == b.Format
++            && a.SampleDesc.Count == b.SampleDesc.Count
++            && a.SampleDesc.Quality == b.SampleDesc.Quality;
++}
++
++// Free textures kept per OpenGL context. A frame is usually replaced before the next one is
++// imported, so two or three textures cover the steady state.
++static constexpr qsizetype MaxFreeTexturesPerContext = 4;
++
++WGLHelper::InteropTexture *WGLHelper::acquireTexture(const D3D11_TEXTURE2D_DESC &desc)
++{
++    QOpenGLContext *context = QOpenGLContext::currentContext();
++    Q_ASSERT(context);
++
++    QList<InteropTexture *> staleTextures;
++    {
++        QMutexLocker locker(&m_poolMutex);
++        for (qsizetype i = 0; i < m_freeTextures.size(); ++i) {
++            InteropTexture *texture = m_freeTextures.at(i);
++            if (texture->context == context && isSameTextureDesc(texture->desc, desc)) {
++                m_freeTextures.removeAt(i);
++                m_usedTextures.append(texture);
++                return texture;
++            }
++        }
++
++        // The remaining free textures of this context have an outdated size or format.
++        for (auto it = m_freeTextures.begin(); it != m_freeTextures.end();) {
++            if ((*it)->context == context) {
++                staleTextures.append(*it);
++                it = m_freeTextures.erase(it);
++            } else {
++                ++it;
++            }
++        }
++    }
++    for (InteropTexture *texture : std::as_const(staleTextures))
++        destroyTexture(texture, /*deleteGLTexture=*/true);
++
++    auto *texture = new InteropTexture;
++    texture->desc = desc;
++    texture->context = context;
++    texture->surface = context->surface();
++
++    HRESULT hr = m_device->CreateTexture2D(&desc, nullptr, &texture->d3dTexture);
++    if (FAILED(hr)) {
++        qWarning("WGL: Failed to create D3D11 texture: %ls",
++                 qUtf16Printable(QSystemError::windowsComString(hr)));
++        delete texture;
++        return nullptr;
++    }
++
++    auto *glFun = context->functions();
++    glFun->glGenTextures(1, &texture->glTexture);
++
++    // Bind the DXGI texture to a GL texture.
++    texture->glHandle = m_functions->wglDXRegisterObjectNV(m_interopDevice,
++                                                           texture->d3dTexture.Get(),
++                                                           texture->glTexture, GL_TEXTURE_2D,
++                                                           WGL_ACCESS_READ_ONLY_NV);
++    Q_ASSERT(glFun->glGetError() == GL_NO_ERROR);
++    if (!texture->glHandle || texture->glHandle == INVALID_HANDLE_VALUE) {
++        qWarning("WGL: Failed to register D3D11 texture: %ls",
++                 qUtf16Printable(QSystemError::windowsString()));
++        glFun->glDeleteTextures(1, &texture->glTexture);
++        delete texture;
++        return nullptr;
++    }
++
++    QMutexLocker locker(&m_poolMutex);
++    if (!m_watchedContexts.contains(context)) {
++        m_watchedContexts.insert(context);
++        QObject::connect(
++                context, &QOpenGLContext::aboutToBeDestroyed, context,
++                [this, context]() { contextAboutToBeDestroyed(context); }, Qt::DirectConnection);
++    }
++    m_usedTextures.append(texture);
++    return texture;
++}
++
++void WGLHelper::releaseTexture(InteropTexture *texture)
++{
++    bool keep = false;
++    {
++        QMutexLocker locker(&m_poolMutex);
++        m_usedTextures.removeOne(texture);
++        if (texture->context) {
++            const auto freeCount = std::count_if(
++                    m_freeTextures.cbegin(), m_freeTextures.cend(),
++                    [texture](InteropTexture *t) { return t->context == texture->context; });
++            if (freeCount < MaxFreeTexturesPerContext) {
++                m_freeTextures.append(texture);
++                keep = true;
++            }
++        }
++    }
++    if (!keep)
++        destroyTexture(texture, /*deleteGLTexture=*/texture->context != nullptr);
++}
++
++void WGLHelper::destroyTexture(InteropTexture *texture, bool deleteGLTexture)
++{
++    if (texture->glHandle && texture->glHandle != INVALID_HANDLE_VALUE)
++        m_functions->wglDXUnregisterObjectNV(m_interopDevice, texture->glHandle);
++
++    if (deleteGLTexture && texture->glTexture && texture->context) {
++        QOpenGLContext *createContext = texture->context;
++        QOpenGLContext *currentContext = QOpenGLContext::currentContext();
++        QSurface *currentSurface = nullptr;
++        bool canDelete = true;
++
++        if (createContext != currentContext) {
++            if (currentContext)
++                currentSurface = currentContext->surface();
++
++            if (!createContext->makeCurrent(texture->surface)) {
++                qWarning("Failed to make OpenGL context current for clean-up, OpenGL resources "
++                         "will not be destroyed.");
++                canDelete = false;
++            }
++        }
++
++        if (canDelete && createContext->isValid())
++            createContext->functions()->glDeleteTextures(1, &texture->glTexture);
++
++        if (currentSurface) {
++            if (!currentContext->makeCurrent(currentSurface))
++                qFatal("Failed to restore OpenGL context after clean-up.");
++        }
++    }
++
++    delete texture;
++}
++
++void WGLHelper::contextAboutToBeDestroyed(QOpenGLContext *context)
++{
++    QList<InteropTexture *> freeTextures;
++    {
++        QMutexLocker locker(&m_poolMutex);
++        m_watchedContexts.remove(context);
++        for (auto it = m_freeTextures.begin(); it != m_freeTextures.end();) {
++            if ((*it)->context == context) {
++                freeTextures.append(*it);
++                it = m_freeTextures.erase(it);
++            } else {
++                ++it;
++            }
++        }
++        // Textures still in use are destroyed without the context when they are released.
++        for (InteropTexture *texture : std::as_const(m_usedTextures)) {
++            if (texture->context == context) {
++                texture->context = nullptr;
++                texture->surface = nullptr;
++            }
++        }
++    }
++
++    // The surface may already be gone, so only delete GL textures if the context is current.
++    const bool isCurrent = QOpenGLContext::currentContext() == context;
++    for (InteropTexture *texture : std::as_const(freeTextures)) {
++        if (!isCurrent) {
++            texture->context = nullptr;
++            texture->surface = nullptr;
++        }
++        destroyTexture(texture, isCurrent);
++    }
++}
++
+ D3DSharedTexture::D3DSharedTexture(WGLHelper::WGLFunctions *wglFun, ID3D11Device *device,
+                                    ID3D11DeviceContext *immediateContext, HANDLE interopDevice,
+                                    HANDLE dxgiSharedHandle)
+@@ -117,74 +296,42 @@ D3DSharedTexture::D3DSharedTexture(WGLHelper::WGLFunctions *wglFun, ID3D11Device
+     textureDesc.SampleDesc = srcDesc.SampleDesc;
+     textureDesc.Usage = D3D11_USAGE_DEFAULT;
+ 
+-    device->CreateTexture2D(&textureDesc, nullptr, &m_d3dTexture);
++    // The texture comes from the pool and is already registered with OpenGL.
++    m_texture = WGLHelper::instance()->acquireTexture(textureDesc);
++    if (!m_texture)
++        return;
+ 
+     // Copy texture from GPU thread to UI thread.
+     // This is a workaround because Intel driver doesn't seem to support interop
+     // for an already shared texture.
+-    immediateContext->CopyResource(m_d3dTexture.Get(), srcTexture.Get());
+-
+-    m_createContext = QOpenGLContext::currentContext();
+-    m_createSurface = m_createContext->surface();
+-    Q_ASSERT(m_createContext);
+-    auto *glFun = m_createContext->functions();
+-
+-    glFun->glGenTextures(1, &m_glTexture);
+-
+-    // Bind the DXGI texture to a GL texture.
+-    m_glTextureHandle = m_wglFun->wglDXRegisterObjectNV(
+-            interopDevice, m_d3dTexture.Get(), m_glTexture, GL_TEXTURE_2D, WGL_ACCESS_READ_ONLY_NV);
+-    Q_ASSERT(glFun->glGetError() == GL_NO_ERROR);
+-    Q_ASSERT(m_glTextureHandle != INVALID_HANDLE_VALUE);
++    immediateContext->CopyResource(m_texture->d3dTexture.Get(), srcTexture.Get());
+ }
+ 
+ D3DSharedTexture::~D3DSharedTexture()
+ {
+-    if (m_glTextureHandle != INVALID_HANDLE_VALUE) {
+-        if (m_isLocked) {
+-            qWarning("WGL: Shared texture is still locked during destruction!");
+-            unlockObject();
+-        }
++    if (!m_texture)
++        return;
+ 
+-        m_wglFun->wglDXUnregisterObjectNV(m_interopDevice, m_glTextureHandle);
++    if (m_isLocked) {
++        qWarning("WGL: Shared texture is still locked during destruction!");
++        unlockObject();
+     }
+ 
+-    if (m_glTexture) {
+-        QOpenGLContext *currentContext = QOpenGLContext::currentContext();
+-        QSurface *currentSurface = nullptr;
+-
+-        if (m_createContext != currentContext) {
+-            if (currentContext)
+-                currentSurface = currentContext->surface();
+-
+-            if (!m_createContext->makeCurrent(m_createSurface)) {
+-                qWarning("Failed to make OpenGL context current for clean-up, OpenGL resources "
+-                         "will not be destroyed.");
+-                return;
+-            }
+-        }
+-
+-        if (!m_createContext->isValid())
+-            return;
+-
+-        auto *glFun = m_createContext->functions();
+-        glFun->glDeleteTextures(1, &m_glTexture);
+-
+-        if (currentSurface) {
+-            if (!currentContext->makeCurrent(currentSurface))
+-                qFatal("Failed to restore OpenGL context after clean-up.");
+-        }
+-    }
++    // Keep the texture registered for the next frame instead of unregistering it.
++    WGLHelper::instance()->releaseTexture(m_texture);
+ }
+ 
+ void D3DSharedTexture::lockObject()
+ {
++    if (!m_texture)
++        return;
++
+     if (m_isLocked) {
+         qWarning("WGL: Shared texture is already locked!");
+         return;
+     }
+ 
+-    bool status = m_wglFun->wglDXLockObjectsNV(m_interopDevice, 1, &m_glTextureHandle);
++    bool status = m_wglFun->wglDXLockObjectsNV(m_interopDevice, 1, &m_texture->glHandle);
+     if (!status) {
+         qWarning("WGL: Failed to lock shared texture: %ls",
+                  qUtf16Printable(QSystemError::windowsString()));
+@@ -201,7 +348,7 @@ void D3DSharedTexture::unlockObject()
+         return;
+     }
+ 
+-    bool status = m_wglFun->wglDXUnlockObjectsNV(m_interopDevice, 1, &m_glTextureHandle);
++    bool status = m_wglFun->wglDXUnlockObjectsNV(m_interopDevice, 1, &m_texture->glHandle);
+     if (!status) {
+         qWarning("WGL: Failed to unlock shared texture: %ls",
+                  qUtf16Printable(QSystemError::windowsString()));
+diff --git a/src/core/compositor/wgl_helper.h b/src/core/compositor/wgl_helper.h
+index 1f94e07..23aa91f 100644
+--- a/src/core/compositor/wgl_helper.h
++++ b/src/core/compositor/wgl_helper.h
+@@ -5,7 +5,10 @@
+ #ifndef WGL_HELPER_H
+ #define WGL_HELPER_H
+ 
++#include <QtCore/qlist.h>
++#include <QtCore/qmutex.h>
+ #include <QtCore/qscopedpointer.h>
++#include <QtCore/qset.h>
+ 
+ #include <d3d11_1.h>
+ #include <wrl.h>
+@@ -61,9 +64,30 @@ public:
+     ID3D11DeviceContext *immediateContext() const { return m_immediateContext.Get(); }
+     HANDLE interopDevice() const { return m_interopDevice; }
+ 
++    // A D3D11 texture registered with WGL_NV_DX_interop for one OpenGL context.
++    // Registering a new texture for every frame and unregistering it afterwards makes some
++    // drivers (e.g. AMD) leak the texture memory and a handle on each cycle, so textures are
++    // kept registered and reused through a small pool.
++    struct InteropTexture
++    {
++        Microsoft::WRL::ComPtr<ID3D11Texture2D> d3dTexture;
++        D3D11_TEXTURE2D_DESC desc = {};
++        QOpenGLContext *context = nullptr; // nullptr once the context has been destroyed
++        QSurface *surface = nullptr;
++        GLuint glTexture = 0;
++        HANDLE glHandle = nullptr;
++    };
++
++    // Must be called with the OpenGL context that will use the texture current.
++    InteropTexture *acquireTexture(const D3D11_TEXTURE2D_DESC &desc);
++    void releaseTexture(InteropTexture *texture);
++
+ private:
+     WGLHelper();
+ 
++    void destroyTexture(InteropTexture *texture, bool deleteGLTexture);
++    void contextAboutToBeDestroyed(QOpenGLContext *context);
++
+     QScopedPointer<WGLFunctions> m_functions;
+ 
+     Microsoft::WRL::ComPtr<IDXGIFactory> m_factory;
+@@ -72,6 +96,11 @@ private:
+     Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_immediateContext;
+ 
+     HANDLE m_interopDevice = INVALID_HANDLE_VALUE;
++
++    QMutex m_poolMutex;
++    QList<InteropTexture *> m_freeTextures;
++    QList<InteropTexture *> m_usedTextures;
++    QSet<QOpenGLContext *> m_watchedContexts;
+ };
+ 
+ class D3DSharedTexture
+@@ -84,17 +113,12 @@ public:
+ 
+     void lockObject();
+     void unlockObject();
+-    GLuint glTexture() const { return m_glTexture; }
++    GLuint glTexture() const { return m_texture ? m_texture->glTexture : 0; }
+ 
+ private:
+     WGLHelper::WGLFunctions *m_wglFun;
+     HANDLE m_interopDevice;
+-    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_d3dTexture;
+-
+-    QOpenGLContext *m_createContext = nullptr;
+-    QSurface *m_createSurface = nullptr;
+-    GLuint m_glTexture = 0;
+-    HANDLE m_glTextureHandle = INVALID_HANDLE_VALUE;
++    WGLHelper::InteropTexture *m_texture = nullptr;
+ 
+     bool m_isLocked = false;
+ };
